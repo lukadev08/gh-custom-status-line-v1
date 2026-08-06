@@ -126,7 +126,7 @@ def render(payload: dict[str, Any]) -> str:
         if total_ms is not None:
             parts.append(duration(total_ms))
         if api_ms is not None:
-            parts.append(f"API{duration(api_ms)}")
+            parts.append(f"API {duration(api_ms)}")
         segments.append(paint(" ".join(parts), BLUE))
 
     cwd = payload.get("cwd")
@@ -181,7 +181,7 @@ def self_test() -> None:
     }
     expected = (
         "GPT-5.4·med | ctx 123.5k/200k 61% ██████░░░░ | req 7 | "
-        "12m34s API1m48s | +42/-8"
+        "12m34s API 1m48s | +42/-8"
     )
     rendered = ANSI_RE.sub("", render(payload))
     assert rendered == expected

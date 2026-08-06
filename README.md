@@ -31,20 +31,54 @@ Entradas inválidas, `NaN`, infinito e caracteres de controle são descartados. 
 - Git, opcionalmente, para mostrar repositório, branch e estado do worktree.
 - Terminal com cores ANSI e os caracteres Unicode `█` e `░`.
 
-Este projeto foi testado no macOS com GitHub Copilot CLI 1.0.78 e Python 3.14.
+O script usa apenas recursos portáveis do Python 3, do Git e do terminal, compatíveis com macOS e Linux.
 
 ## Instalação
 
 ### 1. Instale o Copilot CLI
 
-No macOS com Homebrew:
+#### macOS
+
+Com Homebrew:
 
 ```shell
 brew install --cask copilot-cli
 copilot --version
 ```
 
-Para outros sistemas, consulte a [documentação oficial de instalação](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli).
+#### Linux
+
+Instale primeiro Python 3 e Git pelo gerenciador de pacotes da distribuição. Por exemplo:
+
+```shell
+# Debian e Ubuntu
+sudo apt update && sudo apt install python3 git
+
+# Fedora
+sudo dnf install python3 git
+```
+
+Em seguida, use o instalador oficial do Copilot CLI:
+
+```shell
+curl -fsSL https://gh.io/copilot-install | bash
+copilot --version
+```
+
+Sem privilégios de root, o instalador usa `~/.local` por padrão. Se `copilot` não for encontrado, inclua `~/.local/bin` no `PATH` do shell:
+
+```shell
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Como alternativa para macOS ou Linux, a instalação via npm exige Node.js 22 ou posterior:
+
+```shell
+npm install -g @github/copilot
+copilot --version
+```
+
+Consulte a [documentação oficial de instalação](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) para opções atualizadas.
 
 Se necessário, autentique:
 
@@ -60,10 +94,10 @@ Mantenha o projeto em um caminho estável e execute:
 chmod +x "/caminho/para/gh-status-line/statusline.py"
 ```
 
-No ambiente em que este projeto foi criado, o caminho é:
+No Linux, `realpath` ajuda a obter o caminho absoluto que será usado na configuração:
 
-```text
-/Users/luka/Code/gh status line/statusline.py
+```shell
+realpath statusline.py
 ```
 
 ### 3. Configure o rodapé global
@@ -97,6 +131,8 @@ Crie ou mescle o conteúdo abaixo em `~/.copilot/settings.json`:
 
 Substitua `command` pelo caminho absoluto do script. Caminhos com espaços são aceitos pelo Copilot CLI.
 
+No macOS e no Linux, o arquivo global fica em `~/.copilot/settings.json`. Crie o diretório com `mkdir -p ~/.copilot` caso ele ainda não exista.
+
 > Mescle essas propriedades com as configurações existentes. Não substitua outros valores e não edite `~/.copilot/config.json`, que contém estado interno e autenticação.
 
 ### 4. Reinicie o Copilot
@@ -104,6 +140,13 @@ Substitua `command` pelo caminho absoluto do script. Caminhos com espaços são 
 Abra o CLI:
 
 ```shell
+copilot
+```
+
+No Linux, inicie-o dentro do repositório cujo estado Git deve aparecer:
+
+```shell
+cd /caminho/para/o-repositorio
 copilot
 ```
 
