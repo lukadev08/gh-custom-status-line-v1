@@ -100,7 +100,7 @@ def render(payload: dict[str, Any]) -> str:
 
     display_name = model.get("display_name")
     if isinstance(display_name, str) and display_name:
-        segments.append(paint(f"󰚩 {clean(display_name)}", PURPLE))
+        segments.append(paint(clean(display_name), PURPLE))
 
     current = number(context.get("current_context_tokens"))
     limit = number(context.get("displayed_context_limit"))
@@ -110,14 +110,14 @@ def render(payload: dict[str, Any]) -> str:
     if current is not None and current >= 0 and limit is not None and limit > 0 and percent is not None:
         percent = max(0, min(100, percent))
         filled = min(10, int(percent // 10))
-        gauge = "▰" * filled + "▱" * (10 - filled)
+        gauge = "█" * filled + "░" * (10 - filled)
         segments.append(
-            paint(f"󰘦 {compact(current)}/{compact(limit)} {percent:.0f}% {gauge}", context_color(percent))
+            paint(f"ctx {compact(current)}/{compact(limit)} {percent:.0f}% {gauge}", context_color(percent))
         )
 
     requests = number(cost.get("total_premium_requests"))
     if requests is not None and requests >= 0:
-        segments.append(paint(f"󱐋 {int(requests)}", YELLOW))
+        segments.append(paint(f"req {int(requests)}", YELLOW))
 
     total_ms = number(cost.get("total_duration_ms"))
     api_ms = number(cost.get("total_api_duration_ms"))
@@ -127,7 +127,7 @@ def render(payload: dict[str, Any]) -> str:
             parts.append(duration(total_ms))
         if api_ms is not None:
             parts.append(f"API{duration(api_ms)}")
-        segments.append(paint(f"󰔛 {'·'.join(parts)}", BLUE))
+        segments.append(paint(" ".join(parts), BLUE))
 
     cwd = payload.get("cwd")
     if not isinstance(cwd, str):
@@ -135,25 +135,23 @@ def render(payload: dict[str, Any]) -> str:
         cwd = workspace.get("current_dir")
     if isinstance(cwd, str) and (info := git_info(cwd)):
         repo, branch, dirty = info
-        workspace_text = paint(f" {clean(repo)}", BLUE)
+        workspace_text = paint(clean(repo), BLUE)
         if branch:
             workspace_text += " " + paint(
-                f" {clean(branch)}{'*' if dirty else ''}", YELLOW if dirty else GREEN
+                f"{clean(branch)}{'*' if dirty else ''}", YELLOW if dirty else GREEN
             )
         segments.append(workspace_text)
 
     added = int(number(cost.get("total_lines_added")) or 0)
     removed = int(number(cost.get("total_lines_removed")) or 0)
     if added or removed:
-        segments.append(
-            paint("󰙏 ", MUTED) + paint(f"+{added}", GREEN) + paint(f"/-{removed}", RED)
-        )
+        segments.append(paint(f"+{added}", GREEN) + paint(f"/-{removed}", RED))
 
     remote = payload.get("remote") if isinstance(payload.get("remote"), dict) else {}
     if remote.get("connected") is True:
-        segments.append(paint(" remote", BLUE))
+        segments.append(paint("remote", BLUE))
 
-    return paint(" │ ", MUTED).join(segments)
+    return paint(" | ", MUTED).join(segments)
 
 
 def parse_payload(raw: str) -> dict[str, Any] | None:
@@ -182,10 +180,12 @@ def self_test() -> None:
         },
     }
     expected = (
-        "󰚩 GPT-5.4·med │ 󰘦 123.5k/200k 61% ▰▰▰▰▰▰▱▱▱▱ │ 󱐋 7 │ "
-        "󰔛 12m34s·API1m48s │ 󰙏 +42/-8"
+        "GPT-5.4·med | ctx 123.5k/200k 61% ██████░░░░ | req 7 | "
+        "12m34s API1m48s | +42/-8"
     )
-    assert ANSI_RE.sub("", render(payload)) == expected
+    rendered = ANSI_RE.sub("", render(payload))
+    assert rendered == expected
+    assert not any(0xE000 <= ord(char) <= 0xF8FF or 0xF0000 <= ord(char) <= 0xFFFFD for char in rendered)
     assert render({}) == ""
     assert parse_payload("not json") is None
     assert parse_payload("[]") is None
