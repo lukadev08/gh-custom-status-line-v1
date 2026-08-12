@@ -3,7 +3,7 @@
 Status line customizada para o GitHub Copilot CLI, escrita em Python e sem dependências externas.
 
 ```text
-Auto → gpt-5-mini | ctx 16k/128k 12% █░░░░░░░░░ | req 0 | 12m35s API 12s | meu-repo main*
+Auto → gpt-5-mini | ctx 16k/128k 12% █░░░░░░░░░ | AIC 2.75 | cmp 2 | meu-repo main* | quota 73% ███████░░░ | 12m35s API 12s
 ```
 
 A saída usa cores ANSI truecolor e caracteres Unicode comuns. Não é necessário instalar uma Nerd Font.
@@ -17,18 +17,21 @@ Copilot CLI → JSON em stdin → statusline.py → texto ANSI em stdout → rod
 O Copilot executa `statusline.py` sempre que o estado da sessão muda e, nesta configuração, também a cada cinco segundos. O script:
 
 1. Lê o JSON enviado pelo Copilot.
-2. Formata modelo, contexto, requests e duração.
-3. Consulta o Git no diretório de trabalho.
-4. Monta uma única linha colorida.
-5. Omite informações ausentes em vez de interromper a interface.
+2. Formata modelo, contexto, AI Credits da sessão e duração.
+3. Conta compactações concluídas no histórico local da sessão.
+4. Consulta o Git no diretório de trabalho.
+5. Quando detecta o Headroom, lê a cota já cacheada pelo proxy.
+6. Monta uma única linha colorida.
+7. Omite informações ausentes em vez de interromper a interface.
 
-Entradas inválidas, `NaN`, infinito e caracteres de controle são descartados. Comandos Git possuem timeout de 500 ms; se o diretório não for um repositório ou a consulta falhar, o segmento Git é ocultado.
+Entradas inválidas, `NaN`, infinito e caracteres de controle são descartados. Comandos Git possuem timeout de 500 ms e a consulta local ao Headroom, 300 ms; qualquer falha apenas oculta o segmento correspondente.
 
 ## Requisitos
 
 - GitHub Copilot CLI standalone — não confundir com a extensão antiga `gh copilot`.
 - Python 3.
 - Git, opcionalmente, para mostrar repositório, branch e estado do worktree.
+- Headroom 0.34 ou posterior, opcionalmente, para recuperar a cota quando o footer nativo não a recebe.
 - Terminal com cores ANSI e os caracteres Unicode `█` e `░`.
 
 O script usa apenas recursos portáveis do Python 3, do Git e do terminal, compatíveis com macOS e Linux.
@@ -158,24 +161,50 @@ Se ele já estiver aberto, execute:
 
 O Copilot pode solicitar confiança no diretório antes de abrir a sessão.
 
+### Cota do plano via Headroom
+
+O Headroom consulta a cota do GitHub a cada 60 segundos e a mantém em memória no endpoint `/quota`. A status line lê somente esse endpoint barato; ela não acessa o GitHub diretamente e não manipula credenciais.
+
+O proxy precisa ter sido iniciado com autenticação do Copilot. No fluxo padrão:
+
+```shell
+headroom copilot-auth login
+headroom wrap copilot --subscription
+```
+
+Quando o wrapper define um `COPILOT_PROVIDER_BASE_URL` local, a descoberta é automática. Para um Headroom em outra máquina, prefira encaminhar o endpoint por SSH:
+
+```shell
+ssh -N -L 8787:127.0.0.1:8787 endereco-do-headroom
+export HEADROOM_QUOTA_URL="http://127.0.0.1:8787/quota"
+```
+
+Depois, inicie o Copilot no mesmo shell. Se já existir um proxy local em outra porta ou um endpoint remoto protegido, informe a URL completa em `HEADROOM_QUOTA_URL`.
+
+> O endpoint contém metadados de plano e conta. Não exponha a porta do Headroom publicamente e nunca coloque um token em `settings.json` ou em `statusline.py`.
+
 ## Informações exibidas
 
 | Segmento | Fonte | Comportamento |
 |---|---|---|
 | Modelo | `model.display_name` | Mostra o modelo e esforço fornecidos pelo Copilot. |
 | Contexto | `context_window` | Mostra tokens ativos, limite, percentual e gauge. |
-| Requests | `cost.total_premium_requests` | Mostra a quantidade de requests premium da sessão. |
+| AI Credits | `ai_used` ou evento `session.usage_checkpoint` | Mostra o total de AIC consumido na sessão; em billing legado, mostra requests premium. |
+| Compactações | `session.compaction_complete` | Mostra quantas compactações de contexto terminaram com sucesso. |
 | Tempo | `cost.total_duration_ms` e `total_api_duration_ms` | Separa duração total e espera pela API. |
 | Git | `cwd` ou `workspace.current_dir` | Mostra repositório e branch; `*` indica alterações locais. |
 | Diff | `cost.total_lines_added` e `total_lines_removed` | Aparece somente quando houve alterações. |
 | Remoto | `remote.connected` | Mostra `remote` somente quando conectado. |
-| Quota e estados | Rodapé nativo | Controlados pelas propriedades `footer` do Copilot. |
+| Cota via Headroom | `/quota` → `premium_interactions` | Mostra percentual restante e gauge somente quando o proxy fornece a informação. |
+| Cota nativa e estados | Rodapé nativo | Controlados pelas propriedades `footer` do Copilot. |
 
 O gauge possui dez posições. As cores mudam conforme o uso do contexto:
 
 - Verde: abaixo de 50%.
 - Amarelo: de 50% a 79%.
 - Vermelho: 80% ou mais.
+
+Para a cota, o sentido é inverso porque ela mostra o percentual restante: verde acima de 50%, amarelo entre 21% e 50% e vermelho em 20% ou menos.
 
 ## Personalização
 
@@ -240,7 +269,7 @@ Troque ` | ` por outro separador Unicode ou ASCII.
 
 A ordem visual corresponde à ordem dos `segments.append(...)` dentro de `render()`. Para reorganizar a linha, mova o bloco completo do segmento. Para ocultar um campo, remova o bloco que o adiciona à lista `segments`.
 
-Os rótulos `ctx`, `req`, `API` e `remote` também são textos comuns dentro desses blocos e podem ser renomeados diretamente.
+Os rótulos `ctx`, `AIC`, `cmp`, `req`, `API` e `remote` também são textos comuns dentro desses blocos e podem ser renomeados diretamente.
 
 ### Frequência e espaçamento
 
@@ -274,6 +303,9 @@ Ele valida:
 - Gauge e ausência de glyphs exclusivos de Nerd Font.
 - JSON inválido e campos ausentes.
 - Repositório limpo, sujo, detached HEAD e diretório sem Git.
+- Cota do Headroom e gauge de percentual restante.
+- AI Credits via payload e fallback do histórico local.
+- Compactações bem-sucedidas, ignorando tentativas que falharam.
 - Remoção de caracteres de controle.
 
 Para visualizar uma amostra sem abrir o Copilot:
@@ -283,6 +315,10 @@ Para visualizar uma amostra sem abrir o Copilot:
 {
   "cwd": "/caminho/para/um/repositorio",
   "model": {"display_name": "gpt-5-mini"},
+  "ai_used": {
+    "formatted": "2.75",
+    "total_nano_aiu": 2750000000
+  },
   "context_window": {
     "current_context_tokens": 16000,
     "displayed_context_limit": 128000,
@@ -323,15 +359,30 @@ Use uma fonte monoespaçada que suporte Block Elements ou substitua `█`/`░` 
 
 Desative no objeto `footer` os campos que já são desenhados pelo script, como `showModelEffort`, `showDirectory`, `showBranch`, `showContextWindow` e `showCodeChanges`.
 
+### A cota do Headroom não aparece
+
+1. Confirme que o Headroom é 0.34 ou posterior.
+2. Verifique se o proxy foi iniciado com autenticação do Copilot.
+3. Aguarde até 60 segundos para a primeira atualização.
+4. Confirme que `HEADROOM_QUOTA_URL` aponta para o endpoint `/quota` quando a descoberta local não se aplica.
+5. Reinicie o Copilot no mesmo shell em que a variável foi exportada.
+
+### AIC ou compactações não aparecem
+
+O AIC aparece após o primeiro uso faturável. `cmp 0` aparece quando o Copilot fornece um `transcript_path` válido, e aumenta após cada evento `session.compaction_complete` bem-sucedido. Versões antigas do CLI podem não expor esses dados; nesse caso, o script mantém apenas `req` quando disponível.
+
 ### O repositório ou a branch não aparecem
 
 O diretório precisa estar dentro de um repositório Git. O segmento também é ocultado quando um comando Git falha ou ultrapassa 500 ms.
 
 ## Privacidade
 
-Status lines aparecem em screenshots, gravações e transmissões. O script deliberadamente não exibe username, IDs de sessão, transcript, URLs ou prompts. Evite adicionar tokens, nomes de clientes, caminhos sensíveis ou outros segredos.
+Status lines aparecem em screenshots, gravações e transmissões. O script deliberadamente não exibe username, IDs de sessão, transcript, URLs ou prompts. Para calcular AIC e compactações, lê somente eventos de uso e compactação dentro de `~/.copilot/session-state`. Evite adicionar tokens, nomes de clientes, caminhos sensíveis ou outros segredos.
 
 ## Referências
 
 - [Referência de configuração do Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference#configuration-file-settings)
 - [Referência de comandos do Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#slash-commands-in-the-interactive-interface)
+- [Eventos de streaming do Copilot SDK](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/streaming-events)
+- [Uso e billing do Copilot SDK](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/usage-and-billing)
+- [Headroom](https://github.com/headroomlabs-ai/headroom)

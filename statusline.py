@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import urlopen
 
 
 RESET = "\033[0m"
@@ -22,6 +25,12 @@ RED = "\033[38;2;248;81;73m"
 MUTED = "\033[38;2;139;148;158m"
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+DECIMAL_RE = re.compile(r"\d+(?:\.\d+)?")
+SESSION_EVENT_TYPES = {
+    "session.compaction_complete",
+    "session.usage_checkpoint",
+    "session.shutdown",
+}
 
 
 def paint(text: str, color: str) -> str:
@@ -65,6 +74,113 @@ def context_color(percent: float) -> str:
     return GREEN
 
 
+def fetch_headroom_quota() -> dict[str, Any] | None:
+    """Read Headroom's in-memory quota snapshot without handling credentials here."""
+    try:
+        quota_url = os.environ.get("HEADROOM_QUOTA_URL", "").strip()
+        if not quota_url:
+            base_url = os.environ.get("COPILOT_PROVIDER_BASE_URL", "").strip()
+            if not base_url:
+                return None
+            parsed = urlsplit(base_url)
+            if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+                return None
+            quota_url = urlunsplit((parsed.scheme, parsed.netloc, "/quota", "", ""))
+
+        parsed = urlsplit(quota_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username:
+            return None
+        if parsed.path in {"", "/"}:
+            quota_url = urlunsplit((parsed.scheme, parsed.netloc, "/quota", "", ""))
+        with urlopen(quota_url, timeout=0.3) as response:
+            raw = response.read(65_537)
+        if len(raw) > 65_536:
+            return None
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def quota_segment(data: dict[str, Any]) -> str | None:
+    state = data.get("copilot_quota")
+    if not isinstance(state, dict) or not isinstance(state.get("latest"), dict):
+        return None
+    categories = state["latest"].get("categories")
+    if not isinstance(categories, dict):
+        return None
+    quota = categories.get("premium_interactions")
+    if not isinstance(quota, dict):
+        return None
+    if quota.get("unlimited") is True:
+        return paint("quota ∞", GREEN)
+
+    percent = number(quota.get("percent_remaining"))
+    if percent is None:
+        remaining = number(quota.get("remaining"))
+        entitlement = number(quota.get("entitlement"))
+        if remaining is None or entitlement is None or entitlement <= 0:
+            return None
+        percent = remaining / entitlement * 100
+    percent = max(0, min(100, percent))
+    rounded = min(100, int(percent + 0.5))
+    filled = min(10, rounded // 10)
+    gauge = "█" * filled + "░" * (10 - filled)
+    return paint(f"quota {rounded}% {gauge}", context_color(100 - rounded))
+
+
+def session_event_metrics(transcript_path: Any) -> tuple[float | None, int | None]:
+    if not isinstance(transcript_path, str) or not transcript_path:
+        return None, None
+    try:
+        root = (Path(os.environ.get("COPILOT_HOME", Path.home() / ".copilot")) / "session-state").resolve()
+        path = Path(transcript_path).resolve()
+        events = (path / "events.jsonl" if path.is_dir() else path).resolve()
+        if root not in events.parents or events.name != "events.jsonl":
+            return None, None
+
+        nano_aiu = None
+        compactions = 0
+        with events.open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                if '"session.' not in line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                event_type = event.get("type") if isinstance(event, dict) else None
+                if event_type not in SESSION_EVENT_TYPES:
+                    continue
+                data = event.get("data")
+                if not isinstance(data, dict):
+                    continue
+                if event_type == "session.compaction_complete":
+                    if data.get("success") is True:
+                        compactions += 1
+                    continue
+                value = number(data.get("totalNanoAiu"))
+                if value is not None and value >= 0:
+                    nano_aiu = value
+        return nano_aiu, compactions
+    except (OSError, ValueError):
+        return None, None
+
+
+def ai_credits(payload: dict[str, Any], fallback_nano_aiu: float | None) -> str | None:
+    usage = payload.get("ai_used") if isinstance(payload.get("ai_used"), dict) else {}
+    formatted = usage.get("formatted")
+    if isinstance(formatted, str) and DECIMAL_RE.fullmatch(formatted):
+        return formatted
+
+    nano_aiu = number(usage.get("total_nano_aiu"))
+    if nano_aiu is None:
+        nano_aiu = fallback_nano_aiu
+    if nano_aiu is None or nano_aiu < 0:
+        return None
+    return f"{nano_aiu / 1_000_000_000:.3f}".rstrip("0").rstrip(".")
+
+
 def run_git(cwd: str, *args: str) -> str | None:
     try:
         result = subprocess.run(
@@ -92,7 +208,7 @@ def git_info(cwd: str) -> tuple[str, str, bool] | None:
     return Path(root).name, branch, bool(status)
 
 
-def render(payload: dict[str, Any]) -> str:
+def render(payload: dict[str, Any], headroom_quota: dict[str, Any] | None = None) -> str:
     segments: list[str] = []
     model = payload.get("model") if isinstance(payload.get("model"), dict) else {}
     context = payload.get("context_window") if isinstance(payload.get("context_window"), dict) else {}
@@ -115,19 +231,17 @@ def render(payload: dict[str, Any]) -> str:
             paint(f"ctx {compact(current)}/{compact(limit)} {percent:.0f}% {gauge}", context_color(percent))
         )
 
-    requests = number(cost.get("total_premium_requests"))
-    if requests is not None and requests >= 0:
-        segments.append(paint(f"req {int(requests)}", YELLOW))
+    nano_aiu, compactions = session_event_metrics(payload.get("transcript_path"))
+    credits = ai_credits(payload, nano_aiu)
+    if credits is not None:
+        segments.append(paint(f"AIC {credits}", YELLOW))
+    else:
+        requests = number(cost.get("total_premium_requests"))
+        if requests is not None and requests >= 0:
+            segments.append(paint(f"req {int(requests)}", YELLOW))
 
-    total_ms = number(cost.get("total_duration_ms"))
-    api_ms = number(cost.get("total_api_duration_ms"))
-    if total_ms is not None or api_ms is not None:
-        parts = []
-        if total_ms is not None:
-            parts.append(duration(total_ms))
-        if api_ms is not None:
-            parts.append(f"API {duration(api_ms)}")
-        segments.append(paint(" ".join(parts), BLUE))
+    if compactions is not None:
+        segments.append(paint(f"cmp {compactions}", PURPLE))
 
     cwd = payload.get("cwd")
     if not isinstance(cwd, str):
@@ -150,6 +264,19 @@ def render(payload: dict[str, Any]) -> str:
     remote = payload.get("remote") if isinstance(payload.get("remote"), dict) else {}
     if remote.get("connected") is True:
         segments.append(paint("remote", BLUE))
+
+    if headroom_quota is not None and (quota := quota_segment(headroom_quota)):
+        segments.append(quota)
+
+    total_ms = number(cost.get("total_duration_ms"))
+    api_ms = number(cost.get("total_api_duration_ms"))
+    if total_ms is not None or api_ms is not None:
+        parts = []
+        if total_ms is not None:
+            parts.append(duration(total_ms))
+        if api_ms is not None:
+            parts.append(f"API {duration(api_ms)}")
+        segments.append(paint(" ".join(parts), BLUE))
 
     return paint(" | ", MUTED).join(segments)
 
@@ -181,10 +308,29 @@ def self_test() -> None:
     }
     expected = (
         "GPT-5.4·med | ctx 123.5k/200k 61% ██████░░░░ | req 7 | "
-        "12m34s API 1m48s | +42/-8"
+        "+42/-8 | 12m34s API 1m48s"
     )
     rendered = ANSI_RE.sub("", render(payload))
     assert rendered == expected
+    usage_payload = {**payload, "ai_used": {"formatted": "2.75", "total_nano_aiu": 2_750_000_000}}
+    with_credits = ANSI_RE.sub("", render(usage_payload))
+    assert " | AIC 2.75 | " in with_credits and "req 7" not in with_credits
+    assert ai_credits({"ai_used": {"total_nano_aiu": 1_250_000_000}}, None) == "1.25"
+    headroom_quota = {
+        "copilot_quota": {
+            "latest": {
+                "categories": {
+                    "premium_interactions": {
+                        "entitlement": 300,
+                        "remaining": 219,
+                        "percent_remaining": 73,
+                    }
+                }
+            }
+        }
+    }
+    with_quota = ANSI_RE.sub("", render(payload, headroom_quota))
+    assert with_quota.endswith(" | quota 73% ███████░░░ | 12m34s API 1m48s")
     assert not any(0xE000 <= ord(char) <= 0xF8FF or 0xF0000 <= ord(char) <= 0xFFFFD for char in rendered)
     assert render({}) == ""
     assert parse_payload("not json") is None
@@ -192,6 +338,32 @@ def self_test() -> None:
     assert number(float("nan")) is None and number(float("inf")) is None
     assert clean("one\nline\033[31m") == "oneline[31m"
     assert [context_color(value) for value in (49, 50, 79, 80)] == [GREEN, YELLOW, YELLOW, RED]
+
+    with tempfile.TemporaryDirectory() as directory:
+        previous_home = os.environ.get("COPILOT_HOME")
+        os.environ["COPILOT_HOME"] = directory
+        try:
+            session = Path(directory, "session-state", "test-session")
+            session.mkdir(parents=True)
+            events = [
+                {"id": "usage", "data": {"totalNanoAiu": 3_500_000_000}, "type": "session.usage_checkpoint"},
+                {"type": "session.compaction_complete", "data": {"success": True}},
+                {"type": "session.compaction_complete", "data": {"success": False}},
+                {"type": "session.compaction_complete", "data": {"success": True}},
+            ]
+            Path(session, "events.jsonl").write_text(
+                "\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8"
+            )
+            assert session_event_metrics(str(session)) == (3_500_000_000, 2)
+            session_payload = {**payload, "transcript_path": str(session)}
+            rendered_session = ANSI_RE.sub("", render(session_payload))
+            assert " | AIC 3.5 | cmp 2 | " in rendered_session and "req 7" not in rendered_session
+            assert session_event_metrics("/tmp/events.jsonl") == (None, None)
+        finally:
+            if previous_home is None:
+                os.environ.pop("COPILOT_HOME", None)
+            else:
+                os.environ["COPILOT_HOME"] = previous_home
 
     with tempfile.TemporaryDirectory() as directory:
         subprocess.run(["git", "init", "-q", directory], check=True)
@@ -227,7 +399,7 @@ def main() -> int:
         return 2
     payload = parse_payload(sys.stdin.read())
     if payload is not None:
-        sys.stdout.write(render(payload))
+        sys.stdout.write(render(payload, fetch_headroom_quota()))
     return 0
 
 
