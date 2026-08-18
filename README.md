@@ -89,23 +89,15 @@ Se necessário, autentique:
 copilot login
 ```
 
-### 2. Torne o script executável
+### 2. Instale a status line
 
-Mantenha o projeto em um caminho estável e execute:
-
-```shell
-chmod +x "/caminho/para/gh-status-line/statusline.py"
-```
-
-No Linux, `realpath` ajuda a obter o caminho absoluto que será usado na configuração:
+Mantenha o projeto em um caminho estável e execute, dentro dele:
 
 ```shell
-realpath statusline.py
+./statusline.py --install
 ```
 
-### 3. Configure o rodapé global
-
-Crie ou mescle o conteúdo abaixo em `~/.copilot/settings.json`:
+O comando resolve o caminho absoluto de `statusline.py` e mescla somente as propriedades documentadas de `statusLine` e `footer` em `~/.copilot/settings.json`. Outras configurações são preservadas; JSON inválido não é substituído. A configuração aplicada é:
 
 ```json
 {
@@ -132,13 +124,9 @@ Crie ou mescle o conteúdo abaixo em `~/.copilot/settings.json`:
 }
 ```
 
-Substitua `command` pelo caminho absoluto do script. Caminhos com espaços são aceitos pelo Copilot CLI.
+O valor de `command` é preenchido automaticamente. Caminhos com espaços são aceitos pelo Copilot CLI. O instalador não edita `~/.copilot/config.json`, que contém estado interno e autenticação.
 
-No macOS e no Linux, o arquivo global fica em `~/.copilot/settings.json`. Crie o diretório com `mkdir -p ~/.copilot` caso ele ainda não exista.
-
-> Mescle essas propriedades com as configurações existentes. Não substitua outros valores e não edite `~/.copilot/config.json`, que contém estado interno e autenticação.
-
-### 4. Reinicie o Copilot
+### 3. Reinicie o Copilot
 
 Abra o CLI:
 
@@ -299,6 +287,7 @@ Execute o self-test integrado:
 
 Ele valida:
 
+- Instalação com caminho absoluto, merge de configurações e recusa de JSON inválido.
 - Formatação e cores do contexto.
 - Gauge e ausência de glyphs exclusivos de Nerd Font.
 - JSON inválido e campos ausentes.
