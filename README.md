@@ -172,7 +172,15 @@ headroom copilot-auth login
 headroom wrap copilot --subscription
 ```
 
-Quando o wrapper define um `COPILOT_PROVIDER_BASE_URL` local, a descoberta é automática. Para um Headroom em outra máquina, prefira encaminhar o endpoint por SSH:
+A descoberta usa, nesta ordem:
+
+1. `HEADROOM_QUOTA_URL`, quando definida explicitamente.
+2. `COPILOT_PROVIDER_BASE_URL` local, usada no modo provider.
+3. `COPILOT_API_URL` local, usada com `--native`.
+
+Nas opções automáticas, o script preserva a porta informada pelo wrapper e troca o caminho por `/quota`. Só aceita HTTP(S) em `127.0.0.1`, `localhost` ou `::1`, sem credenciais na URL. A descoberta é refeita a cada execução com o ambiente herdado do Copilot; não detecta nomes de variáveis futuros ou mudanças feitas no shell após iniciar o processo. Uma URL explícita continua tendo prioridade: remova um export antigo com `unset HEADROOM_QUOTA_URL` para voltar à descoberta automática.
+
+Para um Headroom em outra máquina, prefira encaminhar o endpoint por SSH:
 
 ```shell
 ssh -N -L 8787:127.0.0.1:8787 endereco-do-headroom

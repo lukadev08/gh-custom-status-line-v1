@@ -79,13 +79,20 @@ def fetch_headroom_quota() -> dict[str, Any] | None:
     try:
         quota_url = os.environ.get("HEADROOM_QUOTA_URL", "").strip()
         if not quota_url:
-            base_url = os.environ.get("COPILOT_PROVIDER_BASE_URL", "").strip()
-            if not base_url:
+            for key in ("COPILOT_PROVIDER_BASE_URL", "COPILOT_API_URL"):
+                try:
+                    parsed = urlsplit(os.environ.get(key, "").strip())
+                except ValueError:
+                    continue
+                if (
+                    parsed.scheme in {"http", "https"}
+                    and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+                    and not parsed.username
+                ):
+                    quota_url = urlunsplit((parsed.scheme, parsed.netloc, "/quota", "", ""))
+                    break
+            if not quota_url:
                 return None
-            parsed = urlsplit(base_url)
-            if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-                return None
-            quota_url = urlunsplit((parsed.scheme, parsed.netloc, "/quota", "", ""))
 
         parsed = urlsplit(quota_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username:
@@ -331,6 +338,32 @@ def self_test() -> None:
     }
     with_quota = ANSI_RE.sub("", render(payload, headroom_quota))
     assert with_quota.endswith(" | quota 73% ███████░░░ | 12m34s API 1m48s")
+    from unittest.mock import MagicMock, patch
+
+    provider_url = "http://127.0.0.1:8787/v1"
+    native_url = "http://localhost:9876/p/project"
+    for env, expected_url in (
+        ({}, None),
+        ({"COPILOT_PROVIDER_BASE_URL": provider_url}, "http://127.0.0.1:8787/quota"),
+        ({"COPILOT_API_URL": native_url}, "http://localhost:9876/quota"),
+        ({"COPILOT_API_URL": "http://[::1]:9876/p/project"}, "http://[::1]:9876/quota"),
+        ({"COPILOT_API_URL": "https://api.example.com"}, None),
+        ({"COPILOT_API_URL": "http://user:secret@localhost:9876"}, None),
+        ({"COPILOT_PROVIDER_BASE_URL": "http://[", "COPILOT_API_URL": native_url}, "http://localhost:9876/quota"),
+        ({"COPILOT_PROVIDER_BASE_URL": "https://api.example.com", "COPILOT_API_URL": native_url}, "http://localhost:9876/quota"),
+        ({"COPILOT_PROVIDER_BASE_URL": provider_url, "COPILOT_API_URL": native_url}, "http://127.0.0.1:8787/quota"),
+        ({"HEADROOM_QUOTA_URL": "http://localhost:7777/quota", "COPILOT_API_URL": native_url}, "http://localhost:7777/quota"),
+    ):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(headroom_quota).encode()
+        with patch.dict(os.environ, env, clear=True), patch(__name__ + ".urlopen", return_value=response) as request:
+            snapshot = fetch_headroom_quota()
+            if expected_url is None:
+                assert snapshot is None
+                request.assert_not_called()
+            else:
+                request.assert_called_once_with(expected_url, timeout=0.3)
+                assert "quota 73%" in ANSI_RE.sub("", render(payload, snapshot))
     assert not any(0xE000 <= ord(char) <= 0xF8FF or 0xF0000 <= ord(char) <= 0xFFFFD for char in rendered)
     assert render({}) == ""
     assert parse_payload("not json") is None
