@@ -31,6 +31,23 @@ SESSION_EVENT_TYPES = {
     "session.usage_checkpoint",
     "session.shutdown",
 }
+INSTALL_SETTINGS = {
+    "statusLine": {"type": "command", "padding": 1, "refreshInterval": 5},
+    "footer": {
+        "showCustom": True,
+        "showQuota": True,
+        "showAgent": True,
+        "showSandbox": True,
+        "showYolo": True,
+        "showModelEffort": False,
+        "showDirectory": False,
+        "showBranch": False,
+        "showContextWindow": False,
+        "showCodeChanges": False,
+        "showUsername": False,
+        "showAiUsed": False,
+    },
+}
 
 
 def paint(text: str, color: str) -> str:
@@ -296,6 +313,31 @@ def parse_payload(raw: str) -> dict[str, Any] | None:
         return None
 
 
+def install_settings(settings_path: Path | None = None) -> Path:
+    path = settings_path or Path.home() / ".copilot" / "settings.json"
+    settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if not isinstance(settings, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+
+    managed = {
+        **INSTALL_SETTINGS,
+        "statusLine": {**INSTALL_SETTINGS["statusLine"], "command": str(Path(__file__).resolve())},
+    }
+    for name, values in managed.items():
+        section = settings.setdefault(name, {})
+        if not isinstance(section, dict):
+            raise ValueError(f"{path}: {name} must be a JSON object")
+        section.update(values)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+        json.dump(settings, stream, ensure_ascii=False, indent=2, allow_nan=False)
+        stream.write("\n")
+        temporary = Path(stream.name)
+    temporary.replace(path)
+    return path
+
+
 def self_test() -> None:
     payload = {
         "cwd": "/path/that/does/not/exist",
@@ -373,6 +415,36 @@ def self_test() -> None:
     assert [context_color(value) for value in (49, 50, 79, 80)] == [GREEN, YELLOW, YELLOW, RED]
 
     with tempfile.TemporaryDirectory() as directory:
+        settings_path = Path(directory, ".copilot", "settings.json")
+        settings_path.parent.mkdir()
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "theme": "dark",
+                    "statusLine": {"padding": 99, "futureOption": True},
+                    "footer": {"showQuota": False, "futureOption": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+        install_settings(settings_path)
+        installed = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert installed["theme"] == "dark"
+        assert installed["statusLine"]["futureOption"] is True
+        assert installed["footer"]["futureOption"] is True
+        assert installed["statusLine"]["padding"] == 1
+        assert installed["footer"]["showQuota"] is True
+        assert installed["statusLine"]["command"] == str(Path(__file__).resolve())
+        settings_path.write_text("{invalid", encoding="utf-8")
+        try:
+            install_settings(settings_path)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise AssertionError("invalid settings JSON was accepted")
+        assert settings_path.read_text(encoding="utf-8") == "{invalid"
+
+    with tempfile.TemporaryDirectory() as directory:
         previous_home = os.environ.get("COPILOT_HOME")
         os.environ["COPILOT_HOME"] = directory
         try:
@@ -427,6 +499,14 @@ def self_test() -> None:
 def main() -> int:
     if sys.argv[1:] == ["--self-test"]:
         self_test()
+        return 0
+    if sys.argv[1:] == ["--install"]:
+        try:
+            path = install_settings()
+        except (OSError, ValueError) as error:
+            print(f"install: {error}", file=sys.stderr)
+            return 1
+        print(f"installed: {path}")
         return 0
     if sys.argv[1:]:
         return 2
